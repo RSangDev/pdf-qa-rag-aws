@@ -1,0 +1,7 @@
+# Embeddings Generator Lambda requirements
+
+# OpenSearch client (optional - falls back to DynamoDB if not available)
+opensearch-py==2.3.1
+requests-aws4auth==1.2.3
+
+# Note: boto3 is pre-installed in Lambda runtime
