@@ -1,0 +1,4 @@
+# PDF Processor Lambda requirements
+
+# No additional requirements needed!
+# Uses boto3 (pre-installed) for S3, Textract, DynamoDB, Lambda
