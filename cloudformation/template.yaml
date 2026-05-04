@@ -1,0 +1,365 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'PDF Q&A RAG System - Bedrock + Textract + Vector Search'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: pdf-qa-rag
+    Description: Project name for resource naming
+
+Resources:
+  # S3 Bucket for PDFs
+  PdfBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-pdfs-${AWS::AccountId}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+      # Note: NotificationConfiguration added via script to avoid circular dependency
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # DynamoDB Table for Metadata
+  MetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-metadata'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: doc_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: doc_id
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # IAM Role for PDF Processor Lambda
+  PdfProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PdfProcessorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:HeadObject
+                Resource: !Sub '${PdfBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - textract:StartDocumentTextDetection
+                  - textract:GetDocumentTextDetection
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt MetadataTable.Arn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt EmbeddingsFunction.Arn
+
+  # PDF Processor Lambda
+  PdfProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-pdf-processor'
+      Runtime: python3.11
+      Handler: handler.lambda_handler
+      Role: !GetAtt PdfProcessorRole.Arn
+      Timeout: 300
+      MemorySize: 1024
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          EMBEDDINGS_FUNCTION: !Ref EmbeddingsFunction
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': json.dumps('Deploy your code!')}
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Lambda Permission for S3
+  PdfProcessorS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PdfProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt PdfBucket.Arn
+
+  # IAM Role for Embeddings Lambda
+  EmbeddingsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EmbeddingsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v1
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt MetadataTable.Arn
+
+  # Embeddings Generator Lambda
+  EmbeddingsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-embeddings'
+      Runtime: python3.11
+      Handler: handler.lambda_handler
+      Role: !GetAtt EmbeddingsRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          OPENSEARCH_ENDPOINT: ''
+          OPENSEARCH_INDEX: pdf-embeddings
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': json.dumps('Deploy your code!')}
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # IAM Role for Q&A API Lambda
+  QaApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QaApiPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v1
+                  - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                Resource: !GetAtt MetadataTable.Arn
+
+  # Q&A API Lambda
+  QaApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-qa-api'
+      Runtime: python3.11
+      Handler: handler.lambda_handler
+      Role: !GetAtt QaApiRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          OPENSEARCH_ENDPOINT: ''
+          OPENSEARCH_INDEX: pdf-embeddings
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': json.dumps('Deploy your code!')}
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # API Gateway
+  QaApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ProjectName}-api'
+      Description: PDF Q&A API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Resource /ask
+  AskResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt QaApi.RootResourceId
+      PathPart: ask
+      RestApiId: !Ref QaApi
+
+  # API Resource /documents
+  DocumentsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt QaApi.RootResourceId
+      PathPart: documents
+      RestApiId: !Ref QaApi
+
+  # API Resource /document
+  DocumentResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt QaApi.RootResourceId
+      PathPart: document
+      RestApiId: !Ref QaApi
+
+  # API Resource /document/{id}
+  DocumentIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref DocumentResource
+      PathPart: '{id}'
+      RestApiId: !Ref QaApi
+
+  # POST /ask Method
+  AskMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref AskResource
+      RestApiId: !Ref QaApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QaApiFunction.Arn}/invocations'
+
+  # GET /documents Method
+  DocumentsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ResourceId: !Ref DocumentsResource
+      RestApiId: !Ref QaApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QaApiFunction.Arn}/invocations'
+
+  # GET /document/{id} Method
+  GetDocumentMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ResourceId: !Ref DocumentIdResource
+      RestApiId: !Ref QaApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QaApiFunction.Arn}/invocations'
+
+  # Lambda Permission for API Gateway
+  QaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QaApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${QaApi}/*'
+
+  # API Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - AskMethod
+      - DocumentsMethod
+      - GetDocumentMethod
+    Properties:
+      RestApiId: !Ref QaApi
+      StageName: prod
+
+Outputs:
+  PdfBucketName:
+    Description: S3 bucket for PDF uploads
+    Value: !Ref PdfBucket
+    Export:
+      Name: !Sub '${ProjectName}-bucket'
+
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${QaApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${ProjectName}-api-endpoint'
+
+  MetadataTableName:
+    Description: DynamoDB metadata table
+    Value: !Ref MetadataTable
+    Export:
+      Name: !Sub '${ProjectName}-table'
+
+  PdfProcessorFunctionName:
+    Description: PDF processor Lambda function
+    Value: !Ref PdfProcessorFunction
+    Export:
+      Name: !Sub '${ProjectName}-pdf-processor'
+
+  EmbeddingsFunctionName:
+    Description: Embeddings generator Lambda function
+    Value: !Ref EmbeddingsFunction
+    Export:
+      Name: !Sub '${ProjectName}-embeddings'
+
+  QaApiFunctionName:
+    Description: Q&A API Lambda function
+    Value: !Ref QaApiFunction
+    Export:
+      Name: !Sub '${ProjectName}-qa-api'
+
+  UploadCommand:
+    Description: AWS CLI command to upload PDFs
+    Value: !Sub 'aws s3 cp your-document.pdf s3://${PdfBucket}/'
+
+  BedrockNote:
+    Description: Important - Enable Bedrock models
+    Value: 'Go to AWS Console > Bedrock > Model access > Enable Titan Embeddings and Claude 3 Sonnet'
