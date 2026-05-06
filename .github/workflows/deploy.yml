@@ -1,0 +1,167 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zip
+          pip install -q boto3
+      
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+      
+      - name: Package Lambda functions
+        run: |
+          # PDF Processor
+          cd lambda/pdf-processor
+          zip function.zip handler.py
+          cd ../..
+          
+          # Embeddings Generator
+          cd lambda/embeddings-generator
+          mkdir -p package
+          pip install -r requirements.txt -t package -q
+          cp handler.py package/
+          cd package
+          zip -qr ../function.zip .
+          cd ..
+          rm -rf package
+          cd ../..
+          
+          # Q&A API
+          cd lambda/qa-api
+          mkdir -p package
+          pip install -r requirements.txt -t package -q
+          cp handler.py package/
+          cd package
+          zip -qr ../function.zip .
+          cd ..
+          rm -rf package
+          cd ../..
+      
+      - name: Create deployment bucket
+        run: |
+          BUCKET="pdf-qa-rag-deploy-$(date +%s)"
+          echo "BUCKET=$BUCKET" >> $GITHUB_ENV
+          aws s3 mb "s3://$BUCKET" --region us-east-1 || true
+      
+      - name: Package CloudFormation template
+        run: |
+          aws cloudformation package \
+            --template-file cloudformation/template.yaml \
+            --s3-bucket $BUCKET \
+            --output-template-file packaged-template.yaml \
+            --region us-east-1
+      
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file packaged-template.yaml \
+            --stack-name pdf-qa-rag-stack \
+            --capabilities CAPABILITY_IAM \
+            --parameter-overrides ProjectName=pdf-qa-rag \
+            --region us-east-1
+      
+      - name: Update Lambda functions
+        run: |
+          PDF_PROCESSOR=$(aws cloudformation describe-stacks \
+            --stack-name pdf-qa-rag-stack \
+            --query 'Stacks[0].Outputs[?OutputKey==`PdfProcessorFunctionName`].OutputValue' \
+            --output text --region us-east-1)
+          
+          EMBEDDINGS=$(aws cloudformation describe-stacks \
+            --stack-name pdf-qa-rag-stack \
+            --query 'Stacks[0].Outputs[?OutputKey==`EmbeddingsFunctionName`].OutputValue' \
+            --output text --region us-east-1)
+          
+          QA_API=$(aws cloudformation describe-stacks \
+            --stack-name pdf-qa-rag-stack \
+            --query 'Stacks[0].Outputs[?OutputKey==`QaApiFunctionName`].OutputValue' \
+            --output text --region us-east-1)
+          
+          aws lambda update-function-code \
+            --function-name $PDF_PROCESSOR \
+            --zip-file fileb://lambda/pdf-processor/function.zip \
+            --region us-east-1
+          
+          aws lambda update-function-code \
+            --function-name $EMBEDDINGS \
+            --zip-file fileb://lambda/embeddings-generator/function.zip \
+            --region us-east-1
+          
+          aws lambda update-function-code \
+            --function-name $QA_API \
+            --zip-file fileb://lambda/qa-api/function.zip \
+            --region us-east-1
+      
+      - name: Configure S3 notifications
+        run: |
+          PDF_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name pdf-qa-rag-stack \
+            --query 'Stacks[0].Outputs[?OutputKey==`PdfBucketName`].OutputValue' \
+            --output text --region us-east-1)
+          
+          PDF_PROCESSOR=$(aws cloudformation describe-stacks \
+            --stack-name pdf-qa-rag-stack \
+            --query 'Stacks[0].Outputs[?OutputKey==`PdfProcessorFunctionName`].OutputValue' \
+            --output text --region us-east-1)
+          
+          LAMBDA_ARN=$(aws lambda get-function \
+            --function-name $PDF_PROCESSOR \
+            --query 'Configuration.FunctionArn' \
+            --output text --region us-east-1)
+          
+          cat > /tmp/s3-notification.json << EOF
+          {
+            "LambdaFunctionConfigurations": [
+              {
+                "Id": "PdfProcessor",
+                "LambdaFunctionArn": "$LAMBDA_ARN",
+                "Events": ["s3:ObjectCreated:*"],
+                "Filter": {
+                  "Key": {
+                    "FilterRules": [{"Name": "suffix", "Value": ".pdf"}]
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+          
+          aws s3api put-bucket-notification-configuration \
+            --bucket $PDF_BUCKET \
+            --notification-configuration file:///tmp/s3-notification.json \
+            --region us-east-1
+      
+      - name: Get API endpoint
+        run: |
+          API_ENDPOINT=$(aws cloudformation describe-stacks \
+            --stack-name pdf-qa-rag-stack \
+            --region us-east-1 \
+            --query 'Stacks[0].Outputs[?OutputKey==`ApiEndpoint`].OutputValue' \
+            --output text)
+          echo "::notice::API Endpoint: $API_ENDPOINT"
