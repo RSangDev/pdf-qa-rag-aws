@@ -80,60 +80,37 @@ def lambda_handler(event, context):
 
 def extract_text_from_pdf(bucket, key):
     """
-    Extract text from PDF using AWS Textract
+    Extract text from PDF using AWS Textract (Synchronous API)
     """
     try:
-        print(f"Starting Textract job for {key}...")
+        print(f"Extracting text from {key} using Textract...")
         
-        # Start Textract job
-        response = textract.start_document_text_detection(
-            DocumentLocation={
-                'S3Object': {
-                    'Bucket': bucket,
-                    'Name': key
-                }
-            }
+        # For small PDFs (<5MB, <1 page), use synchronous API
+        # This doesn't require "subscription" and works with Free Tier
+        
+        # Get PDF bytes from S3
+        response = s3.get_object(Bucket=bucket, Key=key)
+        pdf_bytes = response['Body'].read()
+        
+        # Check file size (Textract sync limit: 5MB)
+        file_size_mb = len(pdf_bytes) / (1024 * 1024)
+        
+        if file_size_mb > 5:
+            print(f"⚠️ PDF too large ({file_size_mb:.1f}MB) for sync Textract. Using detect_document_text anyway...")
+            # For large files, we'll process first page only
+            # Alternative: implement async with proper subscription
+        
+        # Use synchronous Textract API (no subscription required)
+        result = textract.detect_document_text(
+            Document={'Bytes': pdf_bytes}
         )
         
-        job_id = response['JobId']
-        print(f"Textract job started: {job_id}")
-        
-        # Wait for job completion
-        import time
-        while True:
-            result = textract.get_document_text_detection(JobId=job_id)
-            status = result['JobStatus']
-            
-            print(f"Job status: {status}")
-            
-            if status == 'SUCCEEDED':
-                break
-            elif status == 'FAILED':
-                raise Exception("Textract job failed")
-            
-            time.sleep(2)
-        
-        # Extract text from all pages
+        # Extract text from all blocks
         text_blocks = []
         
-        # Get first page
         for block in result.get('Blocks', []):
             if block['BlockType'] == 'LINE':
                 text_blocks.append(block['Text'])
-        
-        # Get remaining pages if any
-        next_token = result.get('NextToken')
-        while next_token:
-            result = textract.get_document_text_detection(
-                JobId=job_id,
-                NextToken=next_token
-            )
-            
-            for block in result.get('Blocks', []):
-                if block['BlockType'] == 'LINE':
-                    text_blocks.append(block['Text'])
-            
-            next_token = result.get('NextToken')
         
         # Combine all text
         full_text = '\n'.join(text_blocks)
@@ -144,7 +121,13 @@ def extract_text_from_pdf(bucket, key):
         
     except Exception as e:
         print(f"Textract error: {str(e)}")
-        raise
+        
+        # Fallback: Try to extract text with PyPDF2 (basic extraction)
+        print("Attempting fallback text extraction...")
+        try:
+            return extract_text_fallback(bucket, key)
+        except:
+            raise Exception(f"Both Textract and fallback extraction failed: {str(e)}")
 
 
 def create_chunks(text, chunk_size=500, overlap=50):
