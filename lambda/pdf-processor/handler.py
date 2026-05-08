@@ -80,54 +80,45 @@ def lambda_handler(event, context):
 
 def extract_text_from_pdf(bucket, key):
     """
-    Extract text from PDF using AWS Textract (Synchronous API)
+    Extract text from PDF using pypdf library (no Textract needed)
     """
     try:
-        print(f"Extracting text from {key} using Textract...")
-        
-        # For small PDFs (<5MB, <1 page), use synchronous API
-        # This doesn't require "subscription" and works with Free Tier
+        print(f"Extracting text from {key} using pypdf...")
         
         # Get PDF bytes from S3
         response = s3.get_object(Bucket=bucket, Key=key)
         pdf_bytes = response['Body'].read()
         
-        # Check file size (Textract sync limit: 5MB)
-        file_size_mb = len(pdf_bytes) / (1024 * 1024)
+        # Import pypdf
+        import io
+        from pypdf import PdfReader
         
-        if file_size_mb > 5:
-            print(f"⚠️ PDF too large ({file_size_mb:.1f}MB) for sync Textract. Using detect_document_text anyway...")
-            # For large files, we'll process first page only
-            # Alternative: implement async with proper subscription
+        # Create PDF reader
+        pdf_file = io.BytesIO(pdf_bytes)
+        reader = PdfReader(pdf_file)
         
-        # Use synchronous Textract API (no subscription required)
-        result = textract.detect_document_text(
-            Document={'Bytes': pdf_bytes}
-        )
-        
-        # Extract text from all blocks
+        # Extract text from all pages
         text_blocks = []
         
-        for block in result.get('Blocks', []):
-            if block['BlockType'] == 'LINE':
-                text_blocks.append(block['Text'])
+        for page_num, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text.strip():
+                text_blocks.append(text)
+                print(f"  Page {page_num + 1}: {len(text)} chars")
         
         # Combine all text
-        full_text = '\n'.join(text_blocks)
+        full_text = '\n\n'.join(text_blocks)
         
-        print(f"✓ Extracted {len(full_text)} characters from {len(text_blocks)} lines")
+        print(f"✓ Extracted {len(full_text)} characters from {len(reader.pages)} pages")
+        
+        if len(full_text.strip()) < 50:
+            raise Exception("PDF appears to be empty or scanned image (no extractable text)")
         
         return full_text
         
     except Exception as e:
-        print(f"Textract error: {str(e)}")
-        
-        # Fallback: Try to extract text with PyPDF2 (basic extraction)
-        print("Attempting fallback text extraction...")
-        try:
-            return extract_text_fallback(bucket, key)
-        except:
-            raise Exception(f"Both Textract and fallback extraction failed: {str(e)}")
+        print(f"PDF extraction error: {str(e)}")
+        raise Exception(f"Failed to extract text from PDF: {str(e)}")
 
 
 def create_chunks(text, chunk_size=500, overlap=50):
