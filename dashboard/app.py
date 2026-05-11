@@ -50,23 +50,25 @@ with st.sidebar:
     st.title("⚙️ Configuration")
     
     # API Endpoint
-    api_endpoint = st.text_input(
-        "API Gateway Endpoint",
-        value=st.session_state.api_endpoint,
-        placeholder="https://xxx.execute-api.region.amazonaws.com/prod",
-        help="Get from CloudFormation outputs"
-    )
+    api_endpoint = "https://iwh7ub9u6d.execute-api.us-east-1.amazonaws.com/prod"
+    #api_endpoint = st.text_input(
+    #    "API Gateway Endpoint",
+    #    value=st.session_state.api_endpoint,
+    #    placeholder="https://xxx.execute-api.region.amazonaws.com/prod",
+    #    help="Get from CloudFormation outputs"
+    #)
     
     if api_endpoint != st.session_state.api_endpoint:
         st.session_state.api_endpoint = api_endpoint
     
     # S3 Bucket
-    s3_bucket = st.text_input(
-        "S3 Bucket Name",
-        value=st.session_state.s3_bucket,
-        placeholder="pdf-qa-rag-pdfs-xxxxx",
-        help="Get from CloudFormation outputs"
-    )
+    #s3_bucket = st.text_input(
+    #    "S3 Bucket Name",
+    #    value=st.session_state.s3_bucket,
+    #    placeholder="pdf-qa-rag-pdfs-xxxxx",
+    #    help="Get from CloudFormation outputs"
+    #)
+    s3_bucket = "pdf-qa-rag-pdfs-211854352436"
     
     if s3_bucket != st.session_state.s3_bucket:
         st.session_state.s3_bucket = s3_bucket

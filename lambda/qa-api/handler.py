@@ -378,6 +378,18 @@ def format_sources(chunks):
     return sources
 
 
+def decimal_to_number(obj):
+    """
+    Convert Decimal objects to int or float for JSON serialization
+    """
+    if isinstance(obj, Decimal):
+        if obj % 1 == 0:
+            return int(obj)
+        else:
+            return float(obj)
+    return obj
+
+
 def handle_list_documents(event):
     """
     List all uploaded documents
@@ -395,9 +407,9 @@ def handle_list_documents(event):
                 'doc_id': doc['doc_id'],
                 'filename': doc['filename'],
                 'upload_date': doc['upload_date'],
-                'total_chunks': doc.get('total_chunks', 0),
+                'total_chunks': decimal_to_number(doc.get('total_chunks', 0)),
                 'embedding_status': doc.get('embedding_status', 'unknown'),
-                'file_size': doc.get('file_size', 0)
+                'file_size': decimal_to_number(doc.get('file_size', 0))
             })
         
         return cors_response(200, {
