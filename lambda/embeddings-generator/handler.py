@@ -69,7 +69,9 @@ def lambda_handler(event, context):
         if OPENSEARCH_ENDPOINT:
             store_in_opensearch(doc_id, embeddings_data)
         else:
-            print("⚠️ OpenSearch endpoint not configured, skipping vector storage")
+            print("⚠️ OpenSearch endpoint not configured, using DynamoDB only")
+            # Store directly in DynamoDB when OpenSearch is not available
+            store_embeddings_in_dynamodb(doc_id, embeddings_data)
         
         # Update document status in DynamoDB
         update_embedding_status(doc_id, len(embeddings_data))
@@ -130,6 +132,13 @@ def store_in_opensearch(doc_id, embeddings_data):
     """
     Store embeddings in OpenSearch vector database
     """
+    # Check if OpenSearch is configured
+    if not OPENSEARCH_ENDPOINT:
+        print("⚠️ OpenSearch endpoint not configured, using DynamoDB only")
+        # Store directly in DynamoDB
+        store_embeddings_in_dynamodb(doc_id, embeddings_data)
+        return
+    
     try:
         from opensearchpy import OpenSearch, RequestsHttpConnection
         from requests_aws4auth import AWS4Auth
@@ -260,10 +269,13 @@ def store_embeddings_in_dynamodb(doc_id, embeddings_data):
         chunks_with_embeddings = []
         
         for chunk_data in embeddings_data:
+            # Convert float list to Decimal list for DynamoDB
+            embedding_decimals = [Decimal(str(float(x))) for x in chunk_data['embedding']]
+
             chunk = {
                 'chunk_id': chunk_data['chunk_id'],
                 'text': chunk_data['text'],
-                'embedding': chunk_data['embedding'],  # List of floats
+                'embedding': embedding_decimals,  # ✅ USA A VARIÁVEL CONVERTIDA!
                 'start_char': chunk_data['start_char'],
                 'end_char': chunk_data['end_char']
             }

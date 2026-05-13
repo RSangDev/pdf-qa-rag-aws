@@ -1,0 +1,11 @@
+﻿{
+    "chunks":  [
+                   {
+                       "chunk_id":  0,
+                       "start_char":  0,
+                       "end_char":  50,
+                       "text":  "This is a test document about Delta Lake technology"
+                   }
+               ],
+    "doc_id":  "test-manual-123"
+}
